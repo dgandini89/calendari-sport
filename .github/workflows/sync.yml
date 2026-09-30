@@ -30,6 +30,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python sync_calendar.py
         env:
-          FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
-          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-          RESET: ${{ inputs.reset }}
+        PYTHONUNBUFFERED: "1"
+        FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
+        GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        RESET: ${{ inputs.reset }}
