@@ -38,7 +38,7 @@ TEAM_NAME = "FC Internazionale Milano"   # la tua squadra
 # Colori evento Google Calendar (colorId):
 # 1 Lavanda  2 Salvia  3 Uva  4 Fenicottero  5 Banana
 # 6 Mandarino  7 Pavone  8 Grafite  9 Mirtillo  10 Basilico  11 Pomodoro
-TEAM_COLOR_ID = "9"                      # Mirtillo (blu)
+TEAM_COLOR_ID = "6"                      # arancione
 OTHER_COLOR_ID = None                    # None = colore del calendario
 TEAM_REMINDERS_MIN = [60 * 24, 60 * 2]   # promemoria: 1 giorno e 2 ore prima
 MATCH_DURATION = timedelta(hours=2)
