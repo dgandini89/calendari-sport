@@ -1,5 +1,6 @@
 """
-Sincronizza il calendario di Serie A (football-data.org) con Google Calendar.
+Sincronizza il calendario di Serie A / Champions League (football-data.org)
+con Google Calendar.
 
 Pensato per girare su GitHub Actions (automatico + avvio manuale da telefono),
 ma funziona anche in locale.
@@ -17,6 +18,8 @@ Variabili d'ambiente:
   GOOGLE_TOKEN_JSON  contenuto di token.json (vedi genera_token.py)  (oppure file token.json)
   RESET              "true" per ripartire da zero                    (opzionale)
   SEASON             anno di inizio stagione, es. 2026               (opzionale, auto)
+  COMPETITION        SA = Serie A (default), CL = Champions League  (opzionale)
+  ONLY_MY_TEAM       "true" = solo le partite della tua squadra      (opzionale)
   CALENDAR_NAME      nome del calendario                             (opzionale, auto)
 """
 
@@ -38,15 +41,16 @@ TEAM_NAME = "FC Internazionale Milano"   # la tua squadra
 # Colori evento Google Calendar (colorId):
 # 1 Lavanda  2 Salvia  3 Uva  4 Fenicottero  5 Banana
 # 6 Mandarino  7 Pavone  8 Grafite  9 Mirtillo  10 Basilico  11 Pomodoro
-TEAM_COLOR_ID = "6"                      # arancione
+TEAM_COLOR_ID = "6"                      # Mandarino (arancione)
 OTHER_COLOR_ID = None                    # None = colore del calendario
-TEAM_REMINDERS_MIN = [60 * 24, 60 * 2]   # promemoria: 1 giorno e 2 ore prima
+TEAM_REMINDERS = [(1, "12:00"), 5]       # promemoria: giorno prima alle 12:00 e 5 minuti prima
+# formato: numero = minuti prima; (giorni, "HH:MM") = N giorni prima a quell'ora
 MATCH_DURATION = timedelta(hours=2)
-CALENDAR_COLOR = "#33B679"               # usato solo se il calendario viene creato
+# colore del calendario, usato solo quando viene creato
+CALENDAR_COLORS = {"SA": "#33B679", "CL": "#3F51B5"}   # Serie A verde, Champions blu
 # ──────────────────────────────────────────────────────────
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-COMPETITION = "SA"
 SOURCE_TAG = "football-data-sync"
 WRITE_PAUSE = 0.15  # secondi tra una scrittura e l'altra (evita rate limit Google)
 
@@ -62,15 +66,35 @@ STATUS_IT = {
     "AWARDED": "Assegnata a tavolino",
 }
 
+STAGE_IT = {
+    "LEAGUE_STAGE": "Fase campionato", "PLAYOFFS": "Spareggi", "LAST_16": "Ottavi di finale",
+    "QUARTER_FINALS": "Quarti di finale", "SEMI_FINALS": "Semifinali", "FINAL": "Finale",
+}
+COMPETITION_NAMES = {"SA": "Serie A", "CL": "Champions League"}
+
 
 def current_season() -> int:
     now = datetime.now(timezone.utc)
     return now.year if now.month >= 7 else now.year - 1
 
 
+def env_true(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "si", "sì")
+
+
+COMPETITION = os.environ.get("COMPETITION", "SA").strip().upper()
+COMP_NAME = COMPETITION_NAMES.get(COMPETITION, COMPETITION)
+ONLY_MY_TEAM = env_true("ONLY_MY_TEAM")
 SEASON = int(os.environ.get("SEASON") or current_season())
-CALENDAR_NAME = os.environ.get("CALENDAR_NAME") or f"Serie A {SEASON}-{str(SEASON + 1)[-2:]}"
-RESET = os.environ.get("RESET", "").strip().lower() in ("1", "true", "yes", "si", "sì")
+CALENDAR_NAME = (os.environ.get("CALENDAR_NAME")
+                 or f"{COMP_NAME} {SEASON}-{str(SEASON + 1)[-2:]}")
+RESET = env_true("RESET")
+
+try:
+    from zoneinfo import ZoneInfo
+    ROME = ZoneInfo("Europe/Rome")
+except Exception:  # pragma: no cover
+    ROME = timezone.utc
 
 
 # ─── football-data.org ────────────────────────────────────
@@ -126,7 +150,7 @@ def get_or_create_calendar(service):
     service.calendarList().patch(
         calendarId=cal["id"],
         colorRgbFormat=True,
-        body={"backgroundColor": CALENDAR_COLOR, "foregroundColor": "#ffffff"},
+        body={"backgroundColor": CALENDAR_COLORS.get(COMPETITION, "#33B679"), "foregroundColor": "#ffffff"},
     ).execute(num_retries=3)
     print(f"Calendario creato: {CALENDAR_NAME}")
     return cal["id"]
@@ -154,9 +178,30 @@ def safe_delete(service, cal_id, event_id):
     time.sleep(WRITE_PAUSE)
 
 
+def reminder_overrides(start, specs):
+    """Converte i promemoria in minuti prima dell'inizio (come vuole Google).
+    specs: numeri = minuti prima; (giorni, "HH:MM") = N giorni prima a quell'ora."""
+    if start <= datetime.now(timezone.utc):
+        return []
+    local = start.astimezone(ROME)
+    out = set()
+    for spec in specs:
+        if isinstance(spec, (tuple, list)):
+            days, hhmm = spec
+            h, m = map(int, hhmm.split(":"))
+            at = (local - timedelta(days=days)).replace(hour=h, minute=m, second=0, microsecond=0)
+            # confronto in UTC: gestisce correttamente il cambio ora legale/solare
+            minutes = int((start.astimezone(timezone.utc) - at.astimezone(timezone.utc)).total_seconds() // 60)
+        else:
+            minutes = int(spec)
+        if 0 <= minutes <= 40320:  # limite Google: 4 settimane
+            out.add(minutes)
+    return [{"method": "popup", "minutes": mn} for mn in sorted(out, reverse=True)][:5]
+
+
 # ─── Partita -> evento ────────────────────────────────────
 def team_label(team):
-    return team.get("shortName") or team.get("name") or "?"
+    return team.get("shortName") or team.get("name") or "Da definire"
 
 
 def is_my_team(match):
@@ -187,7 +232,12 @@ def build_event(match):
     else:
         title = f"⚽ {home} - {away}"
 
-    desc = [f"Serie A {SEASON}/{SEASON + 1} — Giornata {match.get('matchday', '?')}",
+    stage = match.get("stage", "")
+    if stage in ("REGULAR_SEASON", "LEAGUE_STAGE") and match.get("matchday"):
+        phase = f"Giornata {match['matchday']}"
+    else:
+        phase = STAGE_IT.get(stage, stage.replace("_", " ").title() or "?")
+    desc = [f"{COMP_NAME} {SEASON}/{SEASON + 1} — {phase}",
             f"Stato: {STATUS_IT.get(status, status)}"]
     if status == "SCHEDULED":
         desc.append("L'orario è provvisorio: verrà aggiornato in automatico.")
@@ -202,8 +252,7 @@ def build_event(match):
         "end": {"dateTime": end.isoformat(), "timeZone": "Europe/Rome"},
         "reminders": {
             "useDefault": False,
-            "overrides": [{"method": "popup", "minutes": m} for m in TEAM_REMINDERS_MIN]
-            if mine and start > datetime.now(timezone.utc) else [],
+            "overrides": reminder_overrides(start, TEAM_REMINDERS) if mine else [],
         },
         "transparency": "transparent",  # non ti segna "occupato"
     }
@@ -220,13 +269,16 @@ def build_event(match):
 
 # ─── Sync ─────────────────────────────────────────────────
 def main():
-    print(f"Stagione {SEASON} — calendario '{CALENDAR_NAME}'"
+    print(f"{COMP_NAME} {SEASON} — calendario '{CALENDAR_NAME}'"
           + (" — MODALITÀ RESET" if RESET else ""))
 
     matches = [m for m in get_fixtures() if m.get("utcDate")]
     print(f"  → {len(matches)} partite da football-data.org")
     if not matches:
         sys.exit("Nessuna partita ricevuta: non tocco il calendario.")
+    if ONLY_MY_TEAM:
+        matches = [m for m in matches if is_my_team(m)]
+        print(f"  → {len(matches)} partite di {TEAM_NAME}")
 
     service = google_service()
     cal_id = get_or_create_calendar(service)
@@ -286,12 +338,6 @@ def main():
         with open(summary_file, "a", encoding="utf-8") as f:
             f.write(f"## Calendario {CALENDAR_NAME}\n\n{report}\n")
 
-
-try:
-    from zoneinfo import ZoneInfo
-    ROME = ZoneInfo("Europe/Rome")
-except Exception:  # pragma: no cover
-    ROME = timezone.utc
 
 if __name__ == "__main__":
     main()
