@@ -55,9 +55,9 @@ SESSION_DURATION_MIN = {
 # Colori evento (colorId), None = colore del calendario
 # 1 Lavanda  2 Salvia  3 Uva  4 Fenicottero  5 Banana
 # 6 Mandarino  7 Pavone  8 Grafite  9 Mirtillo  10 Basilico  11 Pomodoro
-SESSION_COLOR = {"Race": None, "Sprint": None}
+SESSION_COLOR = {"Race": "11", "Sprint": "6"}
 # Promemoria in minuti prima dell'inizio, es. {"Race": [60]}; vuoto = nessuno
-SESSION_REMINDERS_MIN = {}
+SESSION_REMINDERS_MIN = {"Race": [(1, "12:00"), 5], "Sprint": [(1, "12:00"), 5]}
 SHOW_WINNER = True   # aggiunge il vincitore alle gare concluse
 # ──────────────────────────────────────────────────────────
 
